@@ -199,7 +199,7 @@ class IntrusiveQueue {
   }
 
   // 拼接操作：将 other 队列中 [first, last) 的元素移动到当前队列 pos 之前
-  void splice(Iterator pos, IntrusiveQueue& other, Iterator first, Iterator last) noexcept {
+  void Splice(Iterator pos, IntrusiveQueue& other, Iterator first, Iterator last) noexcept {
     if (first == last) {
       return;
     }

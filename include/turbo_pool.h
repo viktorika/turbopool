@@ -2,13 +2,15 @@
  * @Author: victorika
  * @Date: 2025-12-03 15:39:27
  * @Last Modified by: victorika
- * @Last Modified time: 2025-12-04 17:38:24
+ * @Last Modified time: 2025-12-09 11:05:02
  */
 
 #pragma once
 
+#include <atomic>
 #include <cassert>
 #include <condition_variable>
+#include <functional>
 #include <limits>
 #include <memory_resource>
 #include <mutex>
@@ -18,6 +20,7 @@
 #include "atomic_intrusive_queue.hpp"
 #include "bwos_lifo_queue.hpp"
 #include "intrusive_queue.hpp"
+#include "macro.h"
 #include "xorshift.hpp"
 
 namespace turbo_pool {
@@ -51,10 +54,7 @@ struct RemoteQueueList {
 
  public:
   explicit RemoteQueueList(size_t nthreads) noexcept
-      : head_{&this_remotes_},
-        tail_{&this_remotes_},
-        nthreads_(nthreads),
-        this_remotes_(nthreads) {}  // TODO(victorika): 确认初始化顺序有没有问题
+      : head_{&this_remotes_}, tail_{&this_remotes_}, nthreads_(nthreads), this_remotes_(nthreads) {}
   ~RemoteQueueList() noexcept {
     RemoteQueue *head = head_.load(std::memory_order_acquire);
     while (head != tail_) {
@@ -72,7 +72,6 @@ struct RemoteQueueList {
     return tasks;
   }
   RemoteQueue *Get() {
-    // TODO(victorika): 这段代码是否还有优化空间？
     thread_local std::thread::id this_id = std::this_thread::get_id();
     RemoteQueue *head = head_.load(std::memory_order_acquire);
     RemoteQueue *queue = head;
@@ -91,22 +90,15 @@ struct RemoteQueueList {
 };
 class WorkStealingVictim {
  public:
-  explicit WorkStealingVictim(bwos_lifo_queue *queue,  // TODO(victorika): 修改queue
-                              uint32_t index, int numa_node) noexcept
-      : queue_(queue), index_(index), numa_node_(numa_node) {}
-  TaskBase *TrySteal() noexcept {
-    // return queue_->steal_front(); TODO：实现steal_frong
-  }
+  explicit WorkStealingVictim(BWOSLifoQueue<TaskBase *> *queue, uint32_t index) noexcept
+      : queue_(queue), index_(index) {}
+  TaskBase *TrySteal() noexcept { return queue_->StealFront(); }
   [[nodiscard]] uint32_t GetIndex() const noexcept { return index_; }
-  [[nodiscard]] int GetNumaNode() const noexcept { return numa_node_; }
 
  private:
-  bwos_lifo_queue *queue_;
+  BWOSLifoQueue<TaskBase *> *queue_;
   uint32_t index_;
-  int numa_node_;
 };
-
-// TODO(victorika): 确认是否需要保留numa相关逻辑
 
 class ThreadState {
  public:
@@ -132,21 +124,18 @@ class ThreadState {
       if (v.GetIndex() == index_) {
         continue;
       }
-      // TODO(victorika): maybe need to filter by numa node
       all_victims_.push_back(v);
     }
   }
   [[nodiscard]] uint32_t GetIndex() const noexcept { return index_; }
-  WorkStealingVictim AsVictim() noexcept {
-    return WorkStealingVictim{&local_queue_, index_, 0};  // TODO(victorika): maybe need teleport numa node
-  }
+  WorkStealingVictim AsVictim() noexcept { return WorkStealingVictim{&local_queue_, index_}; }
 
  private:
   enum state : uint8_t { kRunning, kSleeping, kNotified };
 
   PopResult TryPop();
   PopResult TryRemote();
-  PopResult TrySteal(std::vector<WorkStealingVictim> &victims);  // TODO(victorika): 找个开源span库替换？
+  PopResult TrySteal(std::vector<WorkStealingVictim> &victims);
   PopResult TryStealAny();
   void NotifyOneSleeping();
   void SetStealing();
@@ -155,21 +144,20 @@ class ThreadState {
   void ClearSleeping();
 
   uint32_t index_;
-  bwos_lifo_queue local_queue_;  // TODO(victorika):
+  BWOSLifoQueue<TaskBase *> local_queue_;
   IntrusiveQueue<TaskBase, &TaskBase::next> pending_queue_;
   std::mutex mut_;
   std::condition_variable cv_;
   bool stop_requested_{false};
-  std::vector<WorkStealingVictim> near_victims_;  // TODO(victorika): ，待确认为何没有这个
   std::vector<WorkStealingVictim> all_victims_;
   std::atomic<state> state_;
   TurboPool *pool_;
-  xorshift rng_;
+  Xorshift rng_;
 };
 class TurboPool {
  public:
   TurboPool();
-  explicit TurboPool(uint32_t thread_count, BWOSParams params = {});  // TODO(victorika): ,numa
+  explicit TurboPool(uint32_t thread_count, BWOSParams params = {});
   ~TurboPool();
   RemoteQueue *GetRemoteQueue() noexcept {
     RemoteQueue *queue = remotes_.Get();
@@ -184,30 +172,31 @@ class TurboPool {
     return queue;
   }
   void RequestStop() noexcept;
-  [[nodiscard]] uint32_t AvailableParallelism() const { return thread_count_; }
+  //[[nodiscard]] uint32_t AvailableParallelism() const { return thread_count_; }
   [[nodiscard]] BWOSParams GetParams() const { return params_; }
   void Enqueue(TaskBase *task) noexcept;
   void Enqueue(RemoteQueue &queue, TaskBase *task) noexcept;
   void Enqueue(RemoteQueue &queue, TaskBase *task, size_t thread_index) noexcept;
+  void Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &TaskBase::next> tasks) noexcept;
   void Run(std::uint32_t index) noexcept;
   void Join() noexcept;
-  alignas(64) std::atomic<std::uint32_t> num_active_{};
-  alignas(64) RemoteQueueList remotes_;
+  alignas(CACHE_LINE_SIZE) std::atomic<std::uint32_t> num_active_{};
+  alignas(CACHE_LINE_SIZE) RemoteQueueList remotes_;
   uint32_t thread_count_;
   uint32_t max_steals_{thread_count_ + 1};
   BWOSParams params_;
   std::vector<std::thread> threads_;
   std::vector<std::optional<ThreadState>> thread_states_;
-  // TODO(victorika): numa
+  Xorshift rng_;
   [[nodiscard]] size_t NumThreads() const noexcept;
 };
 
-inline void MovePendingToLocal(IntrusiveQueue<TaskBase, &TaskBase::next> &pending_queue, bwos_lifo_queue &local_queue) {
-  //   auto last = local_queue.push_back(pending_queue.begin(), pending_queue.end());
-  //   intrusive_queue<&task_base::next> tmp{};
-  //   tmp.splice(tmp.begin(), pending_queue, pending_queue.begin(), last);
-  //   tmp.clear();
-  // TODO(victorika): 待实现
+inline void MovePendingToLocal(IntrusiveQueue<TaskBase, &TaskBase::next> &pending_queue,
+                               BWOSLifoQueue<TaskBase *> &local_queue) {
+  auto last = local_queue.PushBack(pending_queue.begin(), pending_queue.end());
+  IntrusiveQueue<TaskBase, &TaskBase::next> tmp{};
+  tmp.Splice(tmp.begin(), pending_queue, pending_queue.begin(), last);
+  tmp.Clear();
 }
 
 inline ThreadState::PopResult ThreadState::TryRemote() {
@@ -216,19 +205,17 @@ inline ThreadState::PopResult ThreadState::TryRemote() {
   pending_queue_.Append(std::move(remotes));
   if (!pending_queue_.Empty()) {
     MovePendingToLocal(pending_queue_, local_queue_);
-    //   result.task = local_queue_.PopBack();
-    // TODO(victorika): 待实现
+    result.task = local_queue_.PopBack();
   }
   return result;
 }
 
 inline ThreadState::PopResult ThreadState::TryPop() {
   PopResult result{.task = nullptr, .queue_index = index_};
-  //   result.task = local_queue_.pop_back();
-  //   if (result.task) [[likely]] {
-  //     return result;
-  //   }
-  // TODO(victorika): 待实现
+  result.task = local_queue_.PopBack();
+  if (likely(result.task != nullptr)) {
+    return result;
+  }
   return TryRemote();
 }
 
@@ -245,10 +232,9 @@ inline ThreadState::PopResult ThreadState::TrySteal(std::vector<WorkStealingVict
 inline ThreadState::PopResult ThreadState::TryStealAny() { return TrySteal(all_victims_); }
 
 inline void ThreadState::PushLocal(TaskBase *task) {
-  //   if (!local_queue_.push_back(task)) {
-  //     pending_queue_.push_back(task);
-  //   }
-  // TODO(victorika): 待实现
+  if (!local_queue_.PushBack(task)) {
+    pending_queue_.PushBack(task);
+  }
 }
 
 inline void ThreadState::PushLocal(IntrusiveQueue<TaskBase, &TaskBase::next> &&tasks) {
@@ -256,16 +242,25 @@ inline void ThreadState::PushLocal(IntrusiveQueue<TaskBase, &TaskBase::next> &&t
 }
 
 inline void ThreadState::SetStealing() {
-  const std::uint32_t diff = 1u - (1u << 16u);
-  pool_->num_active_.fetch_add(diff, std::memory_order_relaxed);
+  constexpr std::uint32_t kDiff = 1U - (1U << 16U);
+  pool_->num_active_.fetch_add(kDiff, std::memory_order_relaxed);
 }
 
 inline void ThreadState::ClearStealing() {
-  constexpr std::uint32_t diff = 1 - (1u << 16u);
-  const std::uint32_t num_active = pool_->num_active_.fetch_sub(diff, std::memory_order_relaxed);
-  const std::uint32_t num_victims = num_active >> 16u;
-  const std::uint32_t num_thiefs = num_active & 0xffffu;
+  constexpr std::uint32_t kDiff = 1U - (1U << 16U);
+  const std::uint32_t num_active = pool_->num_active_.fetch_sub(kDiff, std::memory_order_relaxed);
+  const std::uint32_t num_victims = num_active >> 16U;
+  const std::uint32_t num_thiefs = num_active & 0xffffU;
   if (num_thiefs == 1 && num_victims != 0) {
+    NotifyOneSleeping();
+  }
+}
+
+inline void ThreadState::SetSleeping() { pool_->num_active_.fetch_sub(1U << 16U, std::memory_order_relaxed); }
+
+inline void ThreadState::ClearSleeping() {
+  const std::uint32_t num_active = pool_->num_active_.fetch_add(1U << 16U, std::memory_order_relaxed);
+  if (num_active == 0) {
     NotifyOneSleeping();
   }
 }
@@ -288,7 +283,6 @@ inline ThreadState::PopResult ThreadState::Pop() {
   PopResult result = TryPop();
   while (result.task == nullptr) {
     SetStealing();
-    // TODO(victorika): numa  near steal
     for (size_t i = 0; i < pool_->max_steals_; ++i) {
       result = TryStealAny();
       if (result.task != nullptr) {
@@ -308,7 +302,6 @@ inline ThreadState::PopResult ThreadState::Pop() {
       if (result.task != nullptr) {
         return result;
       }
-      // TODO(victorika): 这部分跟摘抄实现不一致，回头再看看
       SetSleeping();
       cv_.wait(lock);
       lock.unlock();
@@ -344,11 +337,13 @@ inline void ThreadState::RequestStop() {
 
 inline TurboPool::TurboPool() : TurboPool(std::thread::hardware_concurrency()) {}
 
-inline TurboPool::TurboPool(uint32_t thread_count, BWOSParams params)  // TODO(victorika): numa
+inline TurboPool::TurboPool(uint32_t thread_count, BWOSParams params)
     : remotes_(thread_count), thread_count_(thread_count), params_(params), thread_states_(thread_count) {
   assert(thread_count > 0);
+  std::random_device rd;
+  rng_.seed(rd);
   for (uint32_t index = 0; index < thread_count; ++index) {
-    thread_states_[index].emplace(this, index, params);  // TODO(victorika): numa
+    thread_states_[index].emplace(this, index, params);
   }
   std::vector<WorkStealingVictim> victims;
   victims.reserve(thread_states_.size());
@@ -377,7 +372,6 @@ inline void TurboPool::RequestStop() noexcept {
 
 inline void TurboPool::Run(uint32_t thread_index) noexcept {
   assert(thread_index < thread_count_);
-  // TODO(victorika): numa
   while (true) {
     auto [task, queue_index] = thread_states_[thread_index]->Pop();
     if (task == nullptr) {
@@ -394,27 +388,20 @@ inline void TurboPool::Join() noexcept {
   threads_.clear();
 }
 
-inline void TurboPool::Enqueue(TaskBase *task) noexcept {
-  Enqueue(*GetRemoteQueue(), task);
-}  // TODO(victorika): constraints不知道有没有用
+inline void TurboPool::Enqueue(TaskBase *task) noexcept { Enqueue(*GetRemoteQueue(), task); }
 
-inline size_t TurboPool::NumThreads() const noexcept {
-  // TODO(victorika): 这个实现跟原版也不一样，需要确认有没有问题
-  return thread_count_;
-}
+inline size_t TurboPool::NumThreads() const noexcept { return thread_count_; }
 
-inline void TurboPool::Enqueue(RemoteQueue &queue,
-                               TaskBase *task) noexcept {  // TODO(victorika): 确认constraints变量有没有用
+inline void TurboPool::Enqueue(RemoteQueue &queue, TaskBase *task) noexcept {
   thread_local std::thread::id this_id = std::this_thread::get_id();
-  RemoteQueue *correct_queue =
-      this_id == queue.id_ ? &queue : GetRemoteQueue();  // TODO(victorika): 这里的校验是不是有必要？
+  RemoteQueue *correct_queue = this_id == queue.id_ ? &queue : GetRemoteQueue();
   size_t idx = correct_queue->index_;
   if (idx < thread_states_.size()) {
-    // TODO(victorika): 同样有一些numa处理需要确认
     thread_states_[idx]->PushLocal(task);
     return;
   }
-  const size_t thread_index = uint64_t(std::random_device{}()) % NumThreads();
+  std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
+  const uint32_t thread_index = dist(rng_);
   queue.queues_[thread_index].PushFront(task);
   thread_states_[thread_index]->Notify();
 }
@@ -424,5 +411,126 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, TaskBase *task, size_t thread
   queue.queues_[thread_index].PushFront(task);
   thread_states_[thread_index]->Notify();
 }
+
+inline void TurboPool::Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &TaskBase::next> tasks) noexcept {
+  thread_local std::thread::id this_id = std::this_thread::get_id();
+  RemoteQueue *correct_queue = this_id == queue.id_ ? &queue : GetRemoteQueue();
+  size_t idx = correct_queue->index_;
+  if (idx < thread_states_.size()) {
+    thread_states_[idx]->PushLocal(std::move(tasks));
+    return;
+  }
+  std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
+  const uint32_t thread_index = dist(rng_);
+  queue.queues_[thread_index].Prepend(std::move(tasks));
+  thread_states_[thread_index]->Notify();
+}
+
+class SyncTask : public TaskBase {
+ public:
+  explicit SyncTask(std::function<void()> func) : func_(std::move(func)) {}
+
+  void BuildExecute(std::function<void()> call_back) {
+    call_back_ = std::move(call_back);
+    execute = [](TaskBase *task, uint32_t /*tid*/) noexcept {
+      auto *sync_task = static_cast<SyncTask *>(task);
+      sync_task->func_();
+      sync_task->call_back_();
+    };
+  }
+
+ private:
+  std::function<void()> func_;
+  std::function<void()> call_back_;
+};
+
+template <class T>
+struct AlignedAtomic {
+  alignas(CACHE_LINE_SIZE) std::atomic<T> value;
+
+  explicit AlignedAtomic(T v = 0) : value(v) {}
+
+  AlignedAtomic(const AlignedAtomic &other) : value(other.value.load(std::memory_order_relaxed)) {}
+
+  AlignedAtomic &operator=(const AlignedAtomic &other) {
+    value.store(other.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    return *this;
+  }
+};
+
+class SyncTaskScheduler {
+ public:
+  SyncTaskScheduler() = delete;
+  explicit SyncTaskScheduler(TurboPool *pool) : pool_(pool), done_(false) {}
+
+  void Enqueue(std::function<void()> func) noexcept { tasks_.emplace_back(std::move(func)); }
+
+  void Run() {
+    auto *queue = pool_->GetRemoteQueue();
+    auto batch_size = tasks_.size() / queue->queues_.size();
+    auto remainder = tasks_.size() % queue->queues_.size();
+    if (0 == batch_size) {
+      tmp_queues_.resize(remainder);
+      task_counters_.resize(remainder);
+      batch_task_counter_ = AlignedAtomic{static_cast<uint32_t>(remainder)};
+    } else {
+      tmp_queues_.resize(queue->queues_.size());
+      task_counters_.resize(queue->queues_.size(), AlignedAtomic{static_cast<uint32_t>(batch_size)});
+      batch_task_counter_ = AlignedAtomic{static_cast<uint32_t>(queue->queues_.size())};
+    }
+    for (size_t i = 0; i < tmp_queues_.size(); i++) {
+      for (size_t j = 0; j < batch_size; j++) {
+        auto task_index = (i * batch_size) + j;
+        auto &task = tasks_[task_index];
+        task.BuildExecute([this, i]() noexcept {
+          if (1 == task_counters_[i].value.fetch_sub(1, std::memory_order_acq_rel)) {
+            if (1 == batch_task_counter_.value.fetch_sub(1, std::memory_order_acq_rel)) {
+              std::lock_guard lock{mut_};
+              done_ = true;
+              cv_.notify_one();
+            }
+          }
+        });
+        tmp_queues_[i].PushBack(&task);
+      }
+    }
+    for (size_t i = 0; i < remainder; i++) {
+      auto task_index = (batch_size * queue->queues_.size()) + i;
+      auto &task = tasks_[task_index];
+      task_counters_[i].value.fetch_add(1, std::memory_order_acq_rel);
+      task.BuildExecute([this, i]() noexcept {
+        if (1 == task_counters_[i].value.fetch_sub(1, std::memory_order_acq_rel)) {
+          if (1 == batch_task_counter_.value.fetch_sub(1, std::memory_order_acq_rel)) {
+            std::lock_guard lock{mut_};
+            done_ = true;
+            cv_.notify_one();
+          }
+        }
+      });
+      tmp_queues_[i].PushBack(&task);
+    }
+    for (size_t i = 0; i < tmp_queues_.size(); i++) {
+      pool_->Enqueue(*queue, std::move(tmp_queues_[i]));
+    }
+    {
+      std::unique_lock lock{mut_};
+      cv_.wait(lock, [this] { return done_; });
+    }
+    tasks_.clear();
+    tmp_queues_.clear();
+    task_counters_.clear();
+    done_ = false;
+  }
+
+ private:
+  TurboPool *pool_;
+  std::vector<SyncTask> tasks_;
+  std::vector<IntrusiveQueue<TaskBase, &TaskBase::next>> tmp_queues_;
+  std::vector<AlignedAtomic<uint32_t>> task_counters_;
+  AlignedAtomic<uint32_t> batch_task_counter_;
+  std::mutex mut_;
+  std::condition_variable cv_;
+  bool done_;
+};
 
 }  // namespace turbo_pool

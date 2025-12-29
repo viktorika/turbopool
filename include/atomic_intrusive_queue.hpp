@@ -2,28 +2,19 @@
  * @Author: victorika
  * @Date: 2025-12-03 16:15:50
  * @Last Modified by: victorika
- * @Last Modified time: 2025-12-04 17:11:59
+ * @Last Modified time: 2025-12-09 10:59:06
  */
 
 #pragma once
 
 #include <atomic>
-#include <iterator>
-#include <utility>
 #include "intrusive_queue.hpp"
+#include "macro.h"
 
 namespace turbo_pool {
 
-// class intrusive_queue {
-//   pop_all_reversed();
-// };
-
-// class atomic_intrusive_queue {
-//   void append(intrusive_queue &other);
-// };
-
 template <class T, T *T::*NextPtr>
-class alignas(64) AtomicIntrusiveQueue {
+class alignas(CACHE_LINE_SIZE) AtomicIntrusiveQueue {
  public:
   using node_pointer = T *;
   using atomic_node_pointer = std::atomic<T *>;
@@ -44,7 +35,7 @@ class alignas(64) AtomicIntrusiveQueue {
     return {head_.compare_exchange_strong(old_head, t, std::memory_order_acq_rel), old_head == nullptr};
   }
 
-  auto PushFront(node_pointer t) noexcept -> bool {
+  bool PushFront(node_pointer t) noexcept {
     node_pointer old_head = head_.load(std::memory_order_relaxed);
     do {
       t->*NextPtr = old_head;
@@ -60,14 +51,12 @@ class alignas(64) AtomicIntrusiveQueue {
     while (!head_.compare_exchange_weak(old_head, new_head, std::memory_order_acq_rel)) {
       tail->*NextPtr = old_head;
     }
-    queue.clear();
+    queue.Clear();
   }
 
   IntrusiveQueue<T, NextPtr> PopAll() noexcept { return IntrusiveQueue<T, NextPtr>::Make(ResetHead()); }
 
-  IntrusiveQueue<T, NextPtr> PopAllReversed() noexcept {
-    return IntrusiveQueue<T, NextPtr>::MakeReversed(ResetHead());
-  }
+  IntrusiveQueue<T, NextPtr> PopAllReversed() noexcept { return IntrusiveQueue<T, NextPtr>::MakeReversed(ResetHead()); }
 
  private:
   node_pointer ResetHead() noexcept {
