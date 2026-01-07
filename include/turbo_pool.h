@@ -466,6 +466,9 @@ class SyncTaskScheduler {
   void Enqueue(std::function<void()> func) noexcept { tasks_.emplace_back(std::move(func)); }
 
   void Run() {
+    if (tasks_.empty()) {
+      return;
+    }
     auto *queue = pool_->GetRemoteQueue();
     auto batch_size = tasks_.size() / queue->queues_.size();
     auto remainder = tasks_.size() % queue->queues_.size();
