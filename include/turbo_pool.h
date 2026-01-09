@@ -187,7 +187,6 @@ class TurboPool {
   BWOSParams params_;
   std::vector<std::thread> threads_;
   std::vector<std::optional<ThreadState>> thread_states_;
-  Xorshift rng_;
   [[nodiscard]] size_t NumThreads() const noexcept;
 };
 
@@ -340,8 +339,8 @@ inline TurboPool::TurboPool() : TurboPool(std::thread::hardware_concurrency()) {
 inline TurboPool::TurboPool(uint32_t thread_count, BWOSParams params)
     : remotes_(thread_count), thread_count_(thread_count), params_(params), thread_states_(thread_count) {
   assert(thread_count > 0);
-  std::random_device rd;
-  rng_.seed(rd);
+  // std::random_device rd;
+  // rng_.seed(rd);
   for (uint32_t index = 0; index < thread_count; ++index) {
     thread_states_[index].emplace(this, index, params);
   }
@@ -401,6 +400,9 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, TaskBase *task) noexcept {
     return;
   }
   std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
+  std::random_device rd;
+  Xorshift rng_;
+  rng_.seed(rd);
   const uint32_t thread_index = dist(rng_);
   queue.queues_[thread_index].PushFront(task);
   thread_states_[thread_index]->Notify();
@@ -421,6 +423,9 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &Tas
     return;
   }
   std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
+  std::random_device rd;
+  Xorshift rng_;
+  rng_.seed(rd);
   const uint32_t thread_index = dist(rng_);
   queue.queues_[thread_index].Prepend(std::move(tasks));
   thread_states_[thread_index]->Notify();
