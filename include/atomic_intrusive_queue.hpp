@@ -30,13 +30,13 @@ class alignas(CACHE_LINE_SIZE) AtomicIntrusiveQueue {
   };
 
   TryPushResult TryPushFront(node_pointer t) noexcept {
-    node_pointer old_head = head_.load(std::memory_order_relaxed);
+    node_pointer old_head = head_.load(std::memory_order_acquire);
     t->*NextPtr = old_head;
     return {head_.compare_exchange_strong(old_head, t, std::memory_order_acq_rel), old_head == nullptr};
   }
 
   bool PushFront(node_pointer t) noexcept {
-    node_pointer old_head = head_.load(std::memory_order_relaxed);
+    node_pointer old_head = head_.load(std::memory_order_acquire);
     do {
       t->*NextPtr = old_head;
     } while (!head_.compare_exchange_weak(old_head, t, std::memory_order_acq_rel));
@@ -44,9 +44,12 @@ class alignas(CACHE_LINE_SIZE) AtomicIntrusiveQueue {
   }
 
   void Prepend(IntrusiveQueue<T, NextPtr> queue) noexcept {
+    if (queue.Empty()) {
+      return;
+    }
     node_pointer new_head = queue.front();
     node_pointer tail = queue.back();
-    node_pointer old_head = head_.load(std::memory_order_relaxed);
+    node_pointer old_head = head_.load(std::memory_order_acquire);
     tail->*NextPtr = old_head;
     while (!head_.compare_exchange_weak(old_head, new_head, std::memory_order_acq_rel)) {
       tail->*NextPtr = old_head;
@@ -60,7 +63,7 @@ class alignas(CACHE_LINE_SIZE) AtomicIntrusiveQueue {
 
  private:
   node_pointer ResetHead() noexcept {
-    node_pointer old_head = head_.load(std::memory_order_relaxed);
+    node_pointer old_head = head_.load(std::memory_order_acquire);
     while (!head_.compare_exchange_weak(old_head, nullptr, std::memory_order_acq_rel)) {
       ;
     }
