@@ -379,7 +379,7 @@ FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Get() noexcept {
 
 template <class Tp, class Allocator>
 FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Steal() noexcept {
-  std::uint64_t spos = steal_tail_.load(std::memory_order_acquire);
+  std::uint64_t spos = steal_head_.load(std::memory_order_acquire);
   FetchResult<Tp> result{};
   if (unlikely(spos == GetBlockSize())) {
     result.status = BWOSLifoQueueErrorCode::kDone;
