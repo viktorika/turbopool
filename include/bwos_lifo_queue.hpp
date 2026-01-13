@@ -41,6 +41,9 @@ struct TakeoverResult {
 };
 
 inline size_t bit_ceil(size_t x) noexcept {
+  if (x <= 1) {
+    return 1;
+  }
 #ifdef __clang__
   return 1 << (32 - __builtin_clz(x - 1));
 #elif defined(__GNUC__)
