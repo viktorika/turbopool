@@ -400,8 +400,7 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, TaskBase *task) noexcept {
     return;
   }
   std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
-  thread_local std::random_device rd;
-  thread_local Xorshift rng(rd);
+  thread_local Xorshift rng(std::random_device{}());
   const uint32_t thread_index = dist(rng);
   queue.queues_[thread_index].PushFront(task);
   thread_states_[thread_index]->Notify();
@@ -421,10 +420,8 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &Tas
     thread_states_[idx]->PushLocal(std::move(tasks));
     return;
   }
-  thread_local std::uint64_t start_index{std::uint64_t(std::random_device{}())};
   std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
-  thread_local std::random_device rd;
-  thread_local Xorshift rng(rd);
+  thread_local Xorshift rng(std::random_device{}());
   const uint32_t thread_index = dist(rng);
   queue.queues_[thread_index].Prepend(std::move(tasks));
   thread_states_[thread_index]->Notify();
