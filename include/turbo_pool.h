@@ -339,8 +339,6 @@ inline TurboPool::TurboPool() : TurboPool(std::thread::hardware_concurrency()) {
 inline TurboPool::TurboPool(uint32_t thread_count, BWOSParams params)
     : remotes_(thread_count), thread_count_(thread_count), params_(params), thread_states_(thread_count) {
   assert(thread_count > 0);
-  // std::random_device rd;
-  // rng_.seed(rd);
   for (uint32_t index = 0; index < thread_count; ++index) {
     thread_states_[index].emplace(this, index, params);
   }
