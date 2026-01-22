@@ -16,11 +16,6 @@
 
 namespace turbo_pool {
 
-/**
- * This is an implementation of the BWOS queue as described in
- * BWoS: Formally Verified Block-based Work Stealing for Parallel Processing (Wang et al. 2023)
- */
-
 enum class BWOSLifoQueueErrorCode : uint8_t {
   kSuccess,
   kDone,
