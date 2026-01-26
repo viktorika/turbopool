@@ -172,12 +172,12 @@ class TurboPool {
     return queue;
   }
   void RequestStop() noexcept;
-  //[[nodiscard]] uint32_t AvailableParallelism() const { return thread_count_; }
   [[nodiscard]] BWOSParams GetParams() const { return params_; }
   void Enqueue(TaskBase *task) noexcept;
   void Enqueue(RemoteQueue &queue, TaskBase *task) noexcept;
   void Enqueue(RemoteQueue &queue, TaskBase *task, size_t thread_index) noexcept;
   void Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &TaskBase::next> tasks) noexcept;
+  void Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &TaskBase::next> tasks, size_t thread_index) noexcept;
   void Run(std::uint32_t index) noexcept;
   void Join() noexcept;
   alignas(CACHE_LINE_SIZE) std::atomic<std::uint32_t> num_active_{};
@@ -405,7 +405,6 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, TaskBase *task) noexcept {
 }
 
 inline void TurboPool::Enqueue(RemoteQueue &queue, TaskBase *task, size_t thread_index) noexcept {
-  thread_index %= thread_count_;
   queue.queues_[thread_index].PushFront(task);
   thread_states_[thread_index]->Notify();
 }
@@ -421,6 +420,12 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &Tas
   std::uniform_int_distribution<std::uint32_t> dist(0, static_cast<std::uint32_t>(thread_count_ - 1));
   thread_local Xorshift rng(std::random_device{}());
   const uint32_t thread_index = dist(rng);
+  queue.queues_[thread_index].Prepend(std::move(tasks));
+  thread_states_[thread_index]->Notify();
+}
+
+inline void TurboPool::Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &TaskBase::next> tasks,
+                               size_t thread_index) noexcept {
   queue.queues_[thread_index].Prepend(std::move(tasks));
   thread_states_[thread_index]->Notify();
 }
@@ -472,7 +477,6 @@ class SyncTaskScheduler {
     auto batch_size = tasks_.size() / queue->queues_.size();
     auto remainder = tasks_.size() % queue->queues_.size();
     if (0 == batch_size) {
-      tmp_queues_.resize(remainder);
       task_counters_.resize(remainder);
       batch_task_counter_ = AlignedAtomic{static_cast<uint32_t>(remainder)};
     } else {
@@ -509,10 +513,12 @@ class SyncTaskScheduler {
           }
         }
       });
-      tmp_queues_[i].PushBack(&task);
     }
     for (size_t i = 0; i < tmp_queues_.size(); i++) {
-      pool_->Enqueue(*queue, std::move(tmp_queues_[i]));
+      pool_->Enqueue(*queue, std::move(tmp_queues_[i]), i);
+    }
+    for (size_t i = (batch_size * queue->queues_.size()); i < tasks_.size(); i++) {
+      pool_->Enqueue(*queue, &tasks_[i]);
     }
     {
       std::unique_lock lock{mut_};
