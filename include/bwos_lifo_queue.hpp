@@ -172,12 +172,18 @@ Tp BWOSLifoQueue<Tp, Allocator>::StealFront() noexcept {
     size_t thief_index = thief & mask_;
     auto &block = blocks_[thief_index];
     auto result = block.Steal();
+    size_t conflict_cnt = 0;
     while (result.status != BWOSLifoQueueErrorCode::kDone) {
       if (result.status == BWOSLifoQueueErrorCode::kSuccess) {
         return result.value;
       }
       if (result.status == BWOSLifoQueueErrorCode::kEmpty) {
         return Tp{};
+      }
+      if (result.status == BWOSLifoQueueErrorCode::kConflict) {
+        if (++conflict_cnt > 16) {
+          return Tp{};
+        }
       }
       result = block.Steal();
     }
