@@ -6,7 +6,6 @@
  */
 #pragma once
 
-namespace turbo_pool {
 #if defined(_MSC_VER)
 #  include <intrin.h>  // MSVC
 #elif defined(__GNUC__) || defined(__clang__)
@@ -15,6 +14,8 @@ namespace turbo_pool {
 #  endif
 // ARM 通常使用内联汇编，不需要特定头文件，或者使用 <arm_acle.h>
 #endif
+
+namespace turbo_pool {
 
 /**
  * @brief CPU 级别的忙等待提示指令
