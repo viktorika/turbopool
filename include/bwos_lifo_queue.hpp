@@ -16,11 +16,6 @@
 
 namespace turbo_pool {
 
-/**
- * This is an implementation of the BWOS queue as described in
- * BWoS: Formally Verified Block-based Work Stealing for Parallel Processing (Wang et al. 2023)
- */
-
 enum class BWOSLifoQueueErrorCode : uint8_t {
   kSuccess,
   kDone,
@@ -41,6 +36,9 @@ struct TakeoverResult {
 };
 
 inline size_t bit_ceil(size_t x) noexcept {
+  if (x <= 1) {
+    return 1;
+  }
 #ifdef __clang__
   return 1 << (32 - __builtin_clz(x - 1));
 #elif defined(__GNUC__)
@@ -170,16 +168,22 @@ template <class Tp, class Allocator>
 Tp BWOSLifoQueue<Tp, Allocator>::StealFront() noexcept {
   size_t thief = 0;
   do {
-    thief = thief_block_.load(std::memory_order_relaxed);
+    thief = thief_block_.load(std::memory_order_acquire);
     size_t thief_index = thief & mask_;
     auto &block = blocks_[thief_index];
     auto result = block.Steal();
+    size_t conflict_cnt = 0;
     while (result.status != BWOSLifoQueueErrorCode::kDone) {
       if (result.status == BWOSLifoQueueErrorCode::kSuccess) {
         return result.value;
       }
       if (result.status == BWOSLifoQueueErrorCode::kEmpty) {
         return Tp{};
+      }
+      if (result.status == BWOSLifoQueueErrorCode::kConflict) {
+        if (++conflict_cnt > 16) {
+          return Tp{};
+        }
       }
       result = block.Steal();
     }
@@ -215,7 +219,7 @@ template <class Tp, class Allocator>
 size_t BWOSLifoQueue<Tp, Allocator>::GetFreeCapacity() const noexcept {
   size_t owner_counter = owner_block_.load(std::memory_order_relaxed);
   size_t owner_index = owner_counter & mask_;
-  size_t local_capacity = blocks_[owner_index].free_capacity();
+  size_t local_capacity = blocks_[owner_index].FreeCapacity();
   size_t thief_counter = thief_block_.load(std::memory_order_relaxed);
   size_t diff = owner_counter - thief_counter;
   size_t rest = blocks_.size() - diff - 1;
@@ -229,7 +233,7 @@ size_t BWOSLifoQueue<Tp, Allocator>::GetAvailableCapacity() const noexcept {
 
 template <class Tp, class Allocator>
 size_t BWOSLifoQueue<Tp, Allocator>::GetBlockSize() const noexcept {
-  return blocks_[0].block_size();
+  return blocks_[0].GetBlockSize();
 }
 
 template <class Tp, class Allocator>
@@ -249,7 +253,7 @@ bool BWOSLifoQueue<Tp, Allocator>::AdvanceGetIndex() noexcept {
     if (thief_counter == predecessor) {
       predecessor += blocks_.size();
       thief_counter += blocks_.size() - 1UL;
-      thief_block_.store(thief_counter, std::memory_order_relaxed);
+      thief_block_.store(thief_counter, std::memory_order_release);
     }
     owner_block_.store(predecessor, std::memory_order_relaxed);
     return true;
@@ -286,7 +290,7 @@ bool BWOSLifoQueue<Tp, Allocator>::AdvanceStealIndex(size_t expected_thief_count
   size_t next_index = next_counter & mask_;
   auto &next_block = blocks_[next_index];
   if (next_block.IsStealable()) {
-    thief_block_.compare_exchange_strong(thief_counter, next_counter, std::memory_order_relaxed);
+    thief_block_.compare_exchange_strong(thief_counter, next_counter, std::memory_order_acq_rel);
     return true;
   }
   return thief_block_.load(std::memory_order_relaxed) != thief_counter;
@@ -368,7 +372,7 @@ FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Get() noexcept {
   if (unlikely(front == GetBlockSize())) {
     return {BWOSLifoQueueErrorCode::kDone, nullptr};
   }
-  std::uint64_t back = tail_.load(std::memory_order_relaxed);
+  std::uint64_t back = tail_.load(std::memory_order_acquire);
   if (unlikely(front == back)) {
     return {BWOSLifoQueueErrorCode::kEmpty, nullptr};
   }
@@ -379,7 +383,7 @@ FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Get() noexcept {
 
 template <class Tp, class Allocator>
 FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Steal() noexcept {
-  std::uint64_t spos = steal_tail_.load(std::memory_order_relaxed);
+  std::uint64_t spos = steal_head_.load(std::memory_order_acquire);
   FetchResult<Tp> result{};
   if (unlikely(spos == GetBlockSize())) {
     result.status = BWOSLifoQueueErrorCode::kDone;
@@ -390,7 +394,7 @@ FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Steal() noexcept {
     result.status = BWOSLifoQueueErrorCode::kEmpty;
     return result;
   }
-  if (!steal_tail_.compare_exchange_strong(spos, spos + 1, std::memory_order_relaxed)) {
+  if (!steal_tail_.compare_exchange_strong(spos, spos + 1, std::memory_order_acquire)) {
     result.status = BWOSLifoQueueErrorCode::kConflict;
     return result;
   }
@@ -402,7 +406,7 @@ FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Steal() noexcept {
 
 template <class Tp, class Allocator>
 TakeoverResult BWOSLifoQueue<Tp, Allocator>::BlockType::Takeover() noexcept {
-  std::uint64_t spos = steal_tail_.exchange(GetBlockSize(), std::memory_order_relaxed);
+  std::uint64_t spos = steal_tail_.exchange(GetBlockSize(), std::memory_order_acq_rel);
   if (unlikely(spos == GetBlockSize())) {
     return {.front = static_cast<size_t>(head_.load(std::memory_order_relaxed)),
             .back = static_cast<size_t>(tail_.load(std::memory_order_relaxed))};
