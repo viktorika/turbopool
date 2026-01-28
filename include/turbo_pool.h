@@ -12,10 +12,8 @@
 #include <condition_variable>
 #include <functional>
 #include <limits>
-#include <memory_resource>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <thread>
 #include "atomic_intrusive_queue.hpp"
 #include "bwos_lifo_queue.hpp"
