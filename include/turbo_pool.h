@@ -428,22 +428,19 @@ inline void TurboPool::Enqueue(RemoteQueue &queue, IntrusiveQueue<TaskBase, &Tas
   thread_states_[thread_index]->Notify();
 }
 
+class SyncTaskScheduler;
+
 class SyncTask : public TaskBase {
  public:
-  explicit SyncTask(std::function<void()> func) : func_(std::move(func)) {}
+  explicit SyncTask(SyncTaskScheduler *scheduler, std::function<void()> func)
+      : scheduler_(scheduler), func_(std::move(func)) {}
 
-  void BuildExecute(std::function<void()> call_back) {
-    call_back_ = std::move(call_back);
-    execute = [](TaskBase *task, uint32_t /*tid*/) noexcept {
-      auto *sync_task = static_cast<SyncTask *>(task);
-      sync_task->func_();
-      sync_task->call_back_();
-    };
-  }
+  void Build(size_t i);
 
  private:
+  SyncTaskScheduler *scheduler_;
   std::function<void()> func_;
-  std::function<void()> call_back_;
+  size_t index_;
 };
 
 template <class T>
@@ -465,7 +462,7 @@ class SyncTaskScheduler {
   SyncTaskScheduler() = delete;
   explicit SyncTaskScheduler(TurboPool *pool) : pool_(pool), done_(false) {}
 
-  void Enqueue(std::function<void()> func) noexcept { tasks_.emplace_back(std::move(func)); }
+  void Enqueue(std::function<void()> func) noexcept { tasks_.emplace_back(this, std::move(func)); }
 
   void Run() {
     if (tasks_.empty()) {
@@ -486,15 +483,7 @@ class SyncTaskScheduler {
       for (size_t j = 0; j < batch_size; j++) {
         auto task_index = (i * batch_size) + j;
         auto &task = tasks_[task_index];
-        task.BuildExecute([this, i]() noexcept {
-          if (1 == task_counters_[i].value.fetch_sub(1, std::memory_order_acq_rel)) {
-            if (1 == batch_task_counter_.value.fetch_sub(1, std::memory_order_acq_rel)) {
-              std::lock_guard lock{mut_};
-              done_ = true;
-              cv_.notify_one();
-            }
-          }
-        });
+        task.Build(i);
         tmp_queues_[i].PushBack(&task);
       }
     }
@@ -502,15 +491,7 @@ class SyncTaskScheduler {
       auto task_index = (batch_size * queue->queues_.size()) + i;
       auto &task = tasks_[task_index];
       task_counters_[i].value.fetch_add(1, std::memory_order_acq_rel);
-      task.BuildExecute([this, i]() noexcept {
-        if (1 == task_counters_[i].value.fetch_sub(1, std::memory_order_acq_rel)) {
-          if (1 == batch_task_counter_.value.fetch_sub(1, std::memory_order_acq_rel)) {
-            std::lock_guard lock{mut_};
-            done_ = true;
-            cv_.notify_one();
-          }
-        }
-      });
+      task.Build(i);
     }
     for (size_t i = 0; i < tmp_queues_.size(); i++) {
       pool_->Enqueue(*queue, std::move(tmp_queues_[i]), i);
@@ -537,6 +518,23 @@ class SyncTaskScheduler {
   std::mutex mut_;
   std::condition_variable cv_;
   bool done_;
+
+  friend class SyncTask;
 };
+
+inline void SyncTask::Build(size_t i) {
+  index_ = i;
+  execute = [](TaskBase *task, uint32_t /*tid*/) noexcept {
+    auto *sync_task = static_cast<SyncTask *>(task);
+    sync_task->func_();
+    if (1 == sync_task->scheduler_->task_counters_[sync_task->index_].value.fetch_sub(1, std::memory_order_acq_rel)) {
+      if (1 == sync_task->scheduler_->batch_task_counter_.value.fetch_sub(1, std::memory_order_acq_rel)) {
+        std::lock_guard lock{sync_task->scheduler_->mut_};
+        sync_task->scheduler_->done_ = true;
+        sync_task->scheduler_->cv_.notify_one();
+      }
+    }
+  };
+}
 
 }  // namespace turbo_pool
