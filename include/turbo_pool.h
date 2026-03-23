@@ -210,7 +210,7 @@ inline ThreadState::PopResult ThreadState::TryRemote() {
 inline ThreadState::PopResult ThreadState::TryPop() {
   PopResult result{.task = nullptr, .queue_index = index_};
   result.task = local_queue_.PopBack();
-  if (likely(result.task != nullptr)) {
+  if (LIKELY(result.task != nullptr)) {
     return result;
   }
   return TryRemote();

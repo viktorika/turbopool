@@ -272,7 +272,7 @@ bool BWOSLifoQueue<Tp, Allocator>::AdvancePutIndex() noexcept {
   }
   size_t next_index = next_counter & mask_;
   auto &next_block = blocks_[next_index];
-  if (unlikely(!next_block.IsWritable())) {
+  if (UNLIKELY(!next_block.IsWritable())) {
     return false;
   }
   size_t owner_index = owner_counter & mask_;
@@ -345,7 +345,7 @@ typename BWOSLifoQueue<Tp, Allocator>::BlockType &BWOSLifoQueue<Tp, Allocator>::
 template <class Tp, class Allocator>
 BWOSLifoQueueErrorCode BWOSLifoQueue<Tp, Allocator>::BlockType::Put(Tp value) noexcept {
   std::uint64_t back = tail_.load(std::memory_order_relaxed);
-  if (likely(back < GetBlockSize())) {
+  if (LIKELY(back < GetBlockSize())) {
     ring_buffer_[static_cast<size_t>(back)] = static_cast<Tp &&>(value);
     tail_.store(back + 1, std::memory_order_release);
     return BWOSLifoQueueErrorCode::kSuccess;
@@ -369,11 +369,11 @@ Iterator BWOSLifoQueue<Tp, Allocator>::BlockType::BulkPut(Iterator first, Sentin
 template <class Tp, class Allocator>
 FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Get() noexcept {
   std::uint64_t front = head_.load(std::memory_order_relaxed);
-  if (unlikely(front == GetBlockSize())) {
+  if (UNLIKELY(front == GetBlockSize())) {
     return {BWOSLifoQueueErrorCode::kDone, nullptr};
   }
   std::uint64_t back = tail_.load(std::memory_order_acquire);
-  if (unlikely(front == back)) {
+  if (UNLIKELY(front == back)) {
     return {BWOSLifoQueueErrorCode::kEmpty, nullptr};
   }
   Tp value = static_cast<Tp &&>(ring_buffer_[static_cast<size_t>(back - 1)]);
@@ -385,12 +385,12 @@ template <class Tp, class Allocator>
 FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Steal() noexcept {
   std::uint64_t spos = steal_head_.load(std::memory_order_acquire);
   FetchResult<Tp> result{};
-  if (unlikely(spos == GetBlockSize())) {
+  if (UNLIKELY(spos == GetBlockSize())) {
     result.status = BWOSLifoQueueErrorCode::kDone;
     return result;
   }
   std::uint64_t back = tail_.load(std::memory_order_acquire);
-  if (unlikely(spos == back)) {
+  if (UNLIKELY(spos == back)) {
     result.status = BWOSLifoQueueErrorCode::kEmpty;
     return result;
   }
@@ -407,7 +407,7 @@ FetchResult<Tp> BWOSLifoQueue<Tp, Allocator>::BlockType::Steal() noexcept {
 template <class Tp, class Allocator>
 TakeoverResult BWOSLifoQueue<Tp, Allocator>::BlockType::Takeover() noexcept {
   std::uint64_t spos = steal_tail_.exchange(GetBlockSize(), std::memory_order_acq_rel);
-  if (unlikely(spos == GetBlockSize())) {
+  if (UNLIKELY(spos == GetBlockSize())) {
     return {.front = static_cast<size_t>(head_.load(std::memory_order_relaxed)),
             .back = static_cast<size_t>(tail_.load(std::memory_order_relaxed))};
   }
