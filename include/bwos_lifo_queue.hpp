@@ -121,10 +121,11 @@ class BWOSLifoQueue {
     size_t GetBlockSize() const noexcept;
 
     alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> head_;
-    alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> tail_;
-    alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> steal_head_;
-    alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> steal_tail_;
+    std::atomic<std::uint64_t> tail_;
     std::vector<Tp, Allocator> ring_buffer_;
+
+    alignas(CACHE_LINE_SIZE) std::atomic<std::uint64_t> steal_head_;
+    std::atomic<std::uint64_t> steal_tail_;
   };
 
   bool AdvanceGetIndex() noexcept;
@@ -132,9 +133,9 @@ class BWOSLifoQueue {
   bool AdvancePutIndex() noexcept;
 
   alignas(CACHE_LINE_SIZE) std::atomic<size_t> owner_block_{1};
-  alignas(CACHE_LINE_SIZE) std::atomic<size_t> thief_block_{0};
   std::vector<BlockType, allocator_of_t<BlockType>> blocks_;
   size_t mask_;
+  alignas(CACHE_LINE_SIZE) std::atomic<size_t> thief_block_{0};
 };
 
 /////////////////////////////////////////////////////////////////////////////
