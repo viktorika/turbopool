@@ -302,7 +302,7 @@ bool BWOSLifoQueue<Tp, Allocator>::AdvanceStealIndex(size_t expected_thief_count
 
 template <class Tp, class Allocator>
 BWOSLifoQueue<Tp, Allocator>::BlockType::BlockType(size_t block_size, Allocator allocator)
-    : head_{0}, tail_{0}, steal_head_{0}, steal_tail_{block_size}, ring_buffer_(block_size, allocator) {}
+    : head_{0}, tail_{0}, ring_buffer_(block_size, allocator), steal_head_{0}, steal_tail_{block_size} {}
 
 template <class Tp, class Allocator>
 BWOSLifoQueue<Tp, Allocator>::BlockType::BlockType(const BlockType &other) : ring_buffer_(other.ring_buffer_) {
